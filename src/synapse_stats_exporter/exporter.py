@@ -32,7 +32,7 @@ class SynapseStatsMetrics:
 
         print("Synapse Stats Exporter started.")
         while True:
-            print("Synapse Stats Exporter will fetch statistics. Next polling in %d seconds.", self.polling_interval_seconds)
+            print(f"Synapse Stats Exporter will fetch statistics. Next polling in {self.polling_interval_seconds} seconds.")
             self.fetch()
             time.sleep(self.polling_interval_seconds)
 
@@ -56,7 +56,7 @@ class SynapseStatsMetrics:
             print(f"Fetch read failed. Exception: {e}")
 
 def login(base_url, user, password):
-    url = base_url + "_synapse/client/r0/login"
+    url = base_url + "_matrix/client/r0/login"
     data = {
         "type": "m.login.password",
         "user": user,
@@ -77,8 +77,10 @@ def login(base_url, user, password):
             return access_token
         else:
             print("Login failed. Access token not found in response.")
+            return None
     except requests.exceptions.RequestException as e:
         print(f"Login failed. Exception: {e}")
+        return None
     finally:
         session.close()
 
@@ -86,11 +88,14 @@ def main():
     polling_interval_seconds = int(os.getenv("POLLING_INTERVAL_SECONDS", "60"))
     base_url = os.getenv("PROM_SYNAPSE_BASE_URL", "http://localhost:8008/")
     user = os.getenv("PROM_SYNAPSE_USER", "user")
-    password = os.getenv("PROM_SYNAPSE_USER", "password")
+    password = os.getenv("PROM_SYNAPSE_PASSWORD", "password")
     exporter_port = int(os.getenv("EXPORTER_PORT", "9877"))
 
     admin_token = login(base_url=base_url, user=user, password=password)
 
+    if admin_token is None:
+        print("Login failed. Synapse Stats Exporter stopped.")
+        return
     print("Login succeed. Synapse Stats Exporter will be started.")
     synapse_stats_metrics = SynapseStatsMetrics(
         base_url=base_url,
