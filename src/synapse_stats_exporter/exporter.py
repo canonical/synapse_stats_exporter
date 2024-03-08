@@ -1,26 +1,23 @@
 #!/usr/bin/env python
 """Synapse Stats Exporter"""
 
-import json
+import psycopg2
+from psycopg2 import pool
 import os
 import time
 from prometheus_client import start_http_server, Gauge
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
-
-ENDPOINT_ROOMS = "_synapse/admin/v1/rooms?dir=f&from=0&limit=10"
-ENDPOINT_USERS = "_synapse/admin/v2/users?deactivated=false&dir=f&from=0&guests=true&limit=10"
-
 
 class SynapseStatsMetrics:
     """
     Represent Synapse statistics.
     """
 
-    def __init__(self, base_url="http://localhost:8008/", admin_token="", polling_interval_seconds=60):
-        self.base_url = base_url
-        self.admin_token = admin_token
+    def __init__(self, dbname, user, password, host, port, polling_interval_seconds=60):
+        self.dbname = dbname
+        self.user = user
+        self.password = password
+        self.host = host
+        self.port = port
         self.polling_interval_seconds = polling_interval_seconds
 
         # Prometheus metrics to collect
@@ -31,78 +28,74 @@ class SynapseStatsMetrics:
         """Metrics fetching loop"""
 
         print("Synapse Stats Exporter started.")
-        while True:
-            print(f"Synapse Stats Exporter will fetch statistics. Next polling in {self.polling_interval_seconds} seconds.")
-            self.fetch()
-            time.sleep(self.polling_interval_seconds)
+        try:
+                postgreSQL_pool = pool.SimpleConnectionPool(1,3,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password,
+                host=self.host,
+                port=self.port)
+                while True:
+                    print(f"Synapse Stats Exporter will fetch statistics. Next polling in {self.polling_interval_seconds} seconds.")
+                    self.fetch(postgreSQL_pool)
+                    time.sleep(self.polling_interval_seconds)
+        except Exception as e:
+                print(f"Error fetching data: {e}")
+        finally:
+            if postgreSQL_pool:
+                    postgreSQL_pool.closeall
+                    print("PostgreSQL connection pool is closed")
 
-    def fetch(self):
+    def fetch(self, postgreSQL_pool):
         """
         Get metrics from Synapse and refresh Prometheus metrics with
         new values.
         """
         try:
-            headers = {'Authorization': f'Bearer {self.admin_token}'}
-            response = requests.get(f'{self.base_url}{ENDPOINT_ROOMS}', headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            self.synapse_total_rooms.set(data["total_rooms"])
-            response = requests.get(f'{self.base_url}{ENDPOINT_USERS}', headers=headers)
-            data = response.json()
-            self.synapse_total_users.set(data["total"])
-        except requests.exceptions.RequestException as e:
-            print(f"Fetch request failed. Exception: {e}")
-        except (json.decoder.JSONDecodeError, KeyError) as e:
-            print(f"Fetch read failed. Exception: {e}")
+            conn = postgreSQL_pool.getconn()
 
-def login(base_url, user, password):
-    url = base_url + "_matrix/client/r0/login"
-    data = {
-        "type": "m.login.password",
-        "user": user,
-        "password": password
-    }
-    session = requests.Session()
-    retries = Retry(
-        total=3,
-        backoff_factor=3,
-    )
-    session.mount("http://", HTTPAdapter(max_retries=retries))
-    try:
-        response = session.request("POST", url, json=data, timeout=5)
-        response.raise_for_status()
-        response_data = response.json()
-        if "access_token" in response_data:
-            access_token = response_data["access_token"]
-            return access_token
-        else:
-            print("Login failed. Access token not found in response.")
-            return None
-    except requests.exceptions.RequestException as e:
-        print(f"Login failed. Exception: {e}")
-        return None
-    finally:
-        session.close()
+            if conn is None:
+                print("Failed to get connection. Skipping.")
+                return
+
+            cur = conn.cursor()
+
+            # Count total rooms
+            cur.execute("SELECT COUNT(*) FROM rooms")
+            total_rooms = cur.fetchone()[0]
+
+            # Count total users
+            cur.execute("SELECT COUNT(*) FROM users")
+            total_users = cur.fetchone()[0]
+
+            # Set Prometheus metrics
+            self.synapse_total_rooms.set(total_rooms)
+            self.synapse_total_users.set(total_users)
+
+            cur.close()
+            postgreSQL_pool.putconn(conn)
+        except psycopg2.Error as e:
+            print(f"Database connection error: {e}")
 
 def main():
     polling_interval_seconds = int(os.getenv("POLLING_INTERVAL_SECONDS", "60"))
-    base_url = os.getenv("PROM_SYNAPSE_BASE_URL", "http://localhost:8008/")
     user = os.getenv("PROM_SYNAPSE_USER", "user")
     password = os.getenv("PROM_SYNAPSE_PASSWORD", "password")
+    host = os.getenv("PROM_SYNAPSE_HOST", "host")
+    port = int(os.getenv("PROM_SYNAPSE_PORT", "5432"))
+    database = os.getenv("PROM_SYNAPSE_DATABASE", "synapse")
     exporter_port = int(os.getenv("EXPORTER_PORT", "9877"))
 
-    admin_token = login(base_url=base_url, user=user, password=password)
-
-    if admin_token is None:
-        print("Login failed. Synapse Stats Exporter stopped.")
-        return
-    print("Login succeed. Synapse Stats Exporter will be started.")
     synapse_stats_metrics = SynapseStatsMetrics(
-        base_url=base_url,
-        admin_token=admin_token,
+        dbname=database,
+        user=user,
+        password=password,
+        host=host,
+        port=port,
         polling_interval_seconds=polling_interval_seconds
     )
     start_http_server(exporter_port)
+
     synapse_stats_metrics.run_metrics_loop()
 
 
