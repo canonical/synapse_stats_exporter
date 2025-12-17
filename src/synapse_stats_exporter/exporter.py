@@ -77,14 +77,20 @@ class SynapseStatsMetrics:
         except psycopg2.Error as e:
             print(f"Database connection error: {e}")
 
+
+def getenv_int(name, default):
+    value = os.getenv(name)
+    return int(value) if value and value.strip() else default
+
+
 def main():
-    polling_interval_seconds = int(os.getenv("POLLING_INTERVAL_SECONDS", "60"))
-    user = os.getenv("PROM_SYNAPSE_USER", "user")
-    password = os.getenv("PROM_SYNAPSE_PASSWORD", "password")
-    host = os.getenv("PROM_SYNAPSE_HOST", "host")
-    port = int(os.getenv("PROM_SYNAPSE_PORT", "5432"))
-    database = os.getenv("PROM_SYNAPSE_DATABASE", "synapse")
-    exporter_port = int(os.getenv("EXPORTER_PORT", "9877"))
+    polling_interval_seconds = getenv_int("POLLING_INTERVAL_SECONDS", 60)
+    user = os.getenv("PROM_SYNAPSE_USER") or "user"
+    password = os.getenv("PROM_SYNAPSE_PASSWORD") or "password"
+    host = os.getenv("PROM_SYNAPSE_HOST") or "host"
+    port = getenv_int("PROM_SYNAPSE_PORT", 5432)
+    database = os.getenv("PROM_SYNAPSE_DATABASE") or "synapse"
+    exporter_port = getenv_int("EXPORTER_PORT", 9877)
 
     synapse_stats_metrics = SynapseStatsMetrics(
         dbname=database,
@@ -92,10 +98,10 @@ def main():
         password=password,
         host=host,
         port=port,
-        polling_interval_seconds=polling_interval_seconds
+        polling_interval_seconds=polling_interval_seconds,
     )
-    start_http_server(exporter_port)
 
+    start_http_server(exporter_port)
     synapse_stats_metrics.run_metrics_loop()
 
 
